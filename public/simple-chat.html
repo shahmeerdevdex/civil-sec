@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Civil Security Voice Chat</title>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #1a3a6e;
+            text-align: center;
+        }
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            justify-content: center;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #1a3a6e;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        .transcript {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        .status {
+            text-align: center;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        .chat-input {
+            display: flex;
+            margin-top: 15px;
+        }
+        .chat-input input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px 0 0 4px;
+            font-size: 16px;
+        }
+        .chat-input button {
+            border-radius: 0 4px 4px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Civil Security Voice Chat</h1>
+    
+    <div class="container">
+        <div class="status" id="status">Ready to start</div>
+        
+        <div class="controls">
+            <button id="toggleButton">Start</button>
+            <button id="resetButton">Reset</button>
+        </div>
+        
+        <div class="transcript" id="transcript"></div>
+        
+        <div class="chat-input">
+            <input type="text" id="textInput" placeholder="Or type your message here...">
+            <button id="sendButton">Send</button>
+        </div>
+    </div>
+    
+    <script>
+        // DOM Elements
+        const transcriptElement = document.getElementById('transcript');
+        const toggleButton = document.getElementById('toggleButton');
+        const resetButton = document.getElementById('resetButton');
+        const statusElement = document.getElementById('status');
+        const textInput = document.getElementById('textInput');
+        const sendButton = document.getElementById('sendButton');
+        
+        // Variables
+        let socket;
+        let isConnected = false;
+        let audioQueue = [];
+        let isPlaying = false;
+        let chatHistory = [];
+        
+        // Initialize socket connection
+        function initSocket() {
+            socket = io('/civil-security');
+            
+            socket.on('connect', () => {
+                console.log('Socket connected');
+                isConnected = true;
+                updateStatus('Connected to server');
+                
+                // Initialize with security data
+                const securityData = {
+                    additionalData: {
+                        SystemPrompt: 'You are a Civil Security AI assistant.',
+                        User_prompt: 'Provide security-related assistance.',
+                        Greeting_message: 'Welcome to Civil Security. How can I assist you with your security needs today?',
+                        Eligibility_criteria: 'Must be a valid security inquiry.',
+                        Restrictions: 'Cannot provide information about classified security protocols.',
+                        voice_type: 'Female',
+                        language: 'English',
+                        pinecone_index: 'Texas',
+                        agent_type: 'Answer Calls'
+                    }
+                };
+                
+                socket.emit('initialize', securityData);
+            });
+            
+            socket.on('initialized', (data) => {
+                if (data.success) {
+                    updateStatus('Chatbot initialized. Ready to chat!');
+                    toggleButton.textContent = 'Start Speaking';
+                    toggleButton.disabled = false;
+                } else {
+                    updateStatus('Failed to initialize chatbot');
+                }
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('Socket disconnected');
+                isConnected = false;
+                updateStatus('Disconnected from server');
+                toggleButton.textContent = 'Start';
+            });
+            
+            socket.on('transcript', (data) => {
+                if (data.transcript) {
+                    updateStatus('Listening: ' + data.transcript);
+                }
+            });
+            
+            socket.on('audio-out', (audioData) => {
+                audioQueue.push(audioData.audio);
+                if (!isPlaying) {
+                    playNextAudio();
+                }
+            });
+            
+            socket.on('response-end', (data) => {
+                addToTranscript('Civil Security: ' + data.message);
+                updateStatus('Ready');
+                toggleButton.textContent = 'Start Speaking';
+                toggleButton.disabled = false;
+                
+                // Update chat history
+                if (chatHistory.length > 0) {
+                    chatHistory[chatHistory.length - 1].response = data.message;
+                }
+            });
+            
+            socket.on('error', (error) => {
+                console.error('Socket error:', error);
+                updateStatus('Error: ' + error.message);
+            });
+        }
+        
+        // Toggle streaming
+        toggleButton.onclick = async () => {
+            if (!isConnected) {
+                initSocket();
+                toggleButton.textContent = 'Connecting...';
+                toggleButton.disabled = true;
+            } else if (toggleButton.textContent === 'Start Speaking') {
+                startSpeaking();
+            } else {
+                stopSpeaking();
+            }
+        };
+        
+        // Reset conversation
+        resetButton.onclick = () => {
+            chatHistory = [];
+            transcriptElement.textContent = '';
+            updateStatus('Conversation reset');
+        };
+        
+        // Send text message
+        sendButton.onclick = () => {
+            sendTextMessage();
+        };
+        
+        // Allow Enter key to send message
+        textInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendTextMessage();
+            }
+        });
+        
+        // Send text message
+        function sendTextMessage() {
+            const text = textInput.value.trim();
+            if (text && isConnected) {
+                addToTranscript('You: ' + text);
+                
+                // Add to chat history
+                chatHistory.push({
+                    query: text,
+                    response: ''
+                });
+                
+                // Send to server
+                socket.emit('communication', {
+                    query: text,
+                    chatHistory: chatHistory
+                });
+                
+                textInput.value = '';
+                updateStatus('Processing...');
+            }
+        }
+        
+        // Start speaking
+        async function startSpeaking() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                processor.onaudioprocess = (e) => {
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const output = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        output[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                    }
+                    
+                    socket.emit('audio-data', output.buffer);
+                };
+                
+                // Store for cleanup
+                window.stream = stream;
+                window.processor = processor;
+                
+                // Start recognition
+                socket.emit('start-recognition');
+                toggleButton.textContent = 'Stop Speaking';
+                updateStatus('Listening...');
+                
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                updateStatus('Error: ' + err.message);
+            }
+        }
+        
+        // Stop speaking
+        function stopSpeaking() {
+            // Stop media stream
+            if (window.stream) {
+                window.stream.getTracks().forEach(track => track.stop());
+                window.stream = null;
+            }
+            
+            // Stop recognition
+            socket.emit('stop-recognition');
+            toggleButton.textContent = 'Processing...';
+            toggleButton.disabled = true;
+            updateStatus('Processing speech...');
+        }
+        
+        // Play the next audio chunk from the queue
+        function playNextAudio() {
+            if (audioQueue.length > 0) {
+                isPlaying = true;
+                const base64Audio = audioQueue.shift();
+                const audio = new Audio('data:audio/mp3;base64,' + base64Audio);
+                
+                audio.addEventListener('ended', () => {
+                    isPlaying = false;
+                    playNextAudio(); // Play next chunk if available
+                });
+                
+                audio.play().catch(err => {
+                    console.error('Error playing audio:', err);
+                    isPlaying = false;
+                    playNextAudio(); // Try next chunk
+                });
+            }
+        }
+        
+        // Update status
+        function updateStatus(message) {
+            statusElement.textContent = message;
+        }
+        
+        // Add message to transcript
+        function addToTranscript(message) {
+            transcriptElement.textContent += message + '\n\n';
+            transcriptElement.scrollTop = transcriptElement.scrollHeight;
+        }
+        
+        // Initialize on page load
+        window.onload = () => {
+            updateStatus('Click "Start" to connect');
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Civil Security Voice Assistant</title>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .logo {
+            max-width: 200px;
+            margin-bottom: 10px;
+        }
+        
+        h1 {
+            color: #1a3a6e;
+            margin: 0;
+            font-size: 28px;
+        }
+        
+        .tagline {
+            color: #666;
+            font-style: italic;
+            margin-top: 5px;
+        }
+        
+        .main-container {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .chat-container {
+            flex: 2;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            height: 70vh;
+        }
+        
+        .controls-container {
+            flex: 1;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .transcript {
+            flex: 1;
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+        
+        .user-message {
+            background-color: #e3f2fd;
+            border-radius: 18px 18px 2px 18px;
+            padding: 12px 16px;
+            margin: 8px 0;
+            align-self: flex-end;
+            max-width: 80%;
+            display: inline-block;
+        }
+        
+        .bot-message {
+            background-color: #f1f3f4;
+            border-radius: 18px 18px 18px 2px;
+            padding: 12px 16px;
+            margin: 8px 0;
+            align-self: flex-start;
+            max-width: 80%;
+            display: inline-block;
+        }
+        
+        .chat-input {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .chat-input input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #ddd;
+            border-radius: 24px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        
+        .chat-input input:focus {
+            border-color: #1a3a6e;
+        }
+        
+        button {
+            padding: 12px 20px;
+            background-color: #1a3a6e;
+            color: white;
+            border: none;
+            border-radius: 24px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: background-color 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        button:hover {
+            background-color: #15305d;
+        }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            text-align: center;
+            margin: 15px 0;
+            font-weight: 500;
+            color: #555;
+        }
+        
+        .controls-section {
+            margin-bottom: 25px;
+        }
+        
+        .controls-section h3 {
+            margin-top: 0;
+            color: #1a3a6e;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .control-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .voice-button {
+            height: 80px;
+            border-radius: 40px;
+            font-size: 18px;
+            transition: all 0.3s;
+        }
+        
+        .voice-button.active {
+            background-color: #d32f2f;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .voice-button.processing {
+            background-color: #fb8c00;
+        }
+        
+        .voice-visualization {
+            height: 100px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .visualization-bars {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            height: 100%;
+            padding: 0 10px;
+        }
+        
+        .bar {
+            width: 6px;
+            background-color: #1a3a6e;
+            border-radius: 3px;
+            transition: height 0.1s ease;
+        }
+        
+        .settings-section label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .settings-section select {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+            100% {
+                transform: scale(1);
+            }
+        }
+        
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .main-container {
+                flex-direction: column;
+            }
+            
+            .chat-container, .controls-container {
+                width: 100%;
+            }
+            
+            .chat-container {
+                height: 50vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Civil Security Voice Assistant</h1>
+        <p class="tagline">Your intelligent security companion</p>
+    </div>
+    
+    <div class="main-container">
+        <div class="chat-container">
+            <div class="transcript" id="transcript"></div>
+            
+            <div class="status" id="status">Ready to start</div>
+            
+            <div class="chat-input">
+                <input type="text" id="textInput" placeholder="Type your message here...">
+                <button id="sendButton">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Zm-1.833 1.89L6.637 10.07l-.215-.338a.5.5 0 0 0-.154-.154l-.338-.215 7.494-7.494 1.178-.471-.47 1.178Z"/>
+                    </svg>
+                    Send
+                </button>
+            </div>
+        </div>
+        
+        <div class="controls-container">
+            <div class="controls-section">
+                <h3>Voice Controls</h3>
+                
+                <div class="voice-visualization">
+                    <div class="visualization-bars" id="visualization">
+                        <!-- Bars will be added dynamically -->
+                    </div>
+                </div>
+                
+                <div class="control-buttons">
+                    <button id="voiceButton" class="voice-button">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
+                            <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z"/>
+                        </svg>
+                        Hold to Speak
+                    </button>
+                    
+                    <button id="resetButton">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
+                            <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
+                        </svg>
+                        Reset Conversation
+                    </button>
+                </div>
+            </div>
+            
+            <div class="controls-section settings-section">
+                <h3>Settings</h3>
+                
+                <label for="voiceSelect">Assistant Voice</label>
+                <select id="voiceSelect">
+                    <option value="English-Female">English - Female</option>
+                    <option value="English-Male">English - Male</option>
+                    <option value="Spanish-Female">Spanish - Female</option>
+                    <option value="Spanish-Male">Spanish - Male</option>
+                    <option value="French-Female">French - Female</option>
+                    <option value="French-Male">French - Male</option>
+                    <option value="Russian-Female">Russian - Female</option>
+                    <option value="Russian-Male">Russian - Male</option>
+                </select>
+                
+                <label for="languageSelect">Language</label>
+                <select id="languageSelect">
+                    <option value="English">English</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="French">French</option>
+                    <option value="Russian">Russian</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // DOM Elements
+        const transcriptElement = document.getElementById('transcript');
+        const voiceButton = document.getElementById('voiceButton');
+        const resetButton = document.getElementById('resetButton');
+        const statusElement = document.getElementById('status');
+        const textInput = document.getElementById('textInput');
+        const sendButton = document.getElementById('sendButton');
+        const visualization = document.getElementById('visualization');
+        const voiceSelect = document.getElementById('voiceSelect');
+        const languageSelect = document.getElementById('languageSelect');
+        
+        // Create visualization bars
+        const barCount = 20;
+        for (let i = 0; i < barCount; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            bar.style.height = '5px';
+            visualization.appendChild(bar);
+        }
+        const bars = document.querySelectorAll('.bar');
+        
+        // Variables
+        let socket;
+        let isConnected = false;
+        let audioQueue = [];
+        let isPlaying = false;
+        let chatHistory = [];
+        let isRecording = false;
+        let audioContext;
+        let processor;
+        let analyser;
+        let source;
+        let stream;
+        let animationFrame;
+        
+        // Initialize socket connection
+        function initSocket() {
+            if (socket) return; // Don't initialize if already connected
+            
+            socket = io('/civil-security');
+            
+            socket.on('connect', () => {
+                console.log('Socket connected');
+                isConnected = true;
+                updateStatus('Connected to server');
+                
+                // Initialize with security data
+                const securityData = {
+                    additionalData: {
+                        SystemPrompt: 'You are a Civil Security AI assistant.',
+                        User_prompt: 'Provide security-related assistance.',
+                        Greeting_message: 'Welcome to Civil Security. How can I assist you with your security needs today?',
+                        Eligibility_criteria: 'Must be a valid security inquiry.',
+                        Restrictions: 'Cannot provide information about classified security protocols.',
+                        voice_type: voiceSelect.value.split('-')[1],
+                        language: languageSelect.value,
+                        pinecone_index: 'Texas',
+                        agent_type: 'Answer Calls'
+                    }
+                };
+                
+                socket.emit('initialize', securityData);
+            });
+            
+            socket.on('initialized', (data) => {
+                if (data.success) {
+                    updateStatus('Chatbot initialized. Ready to chat!');
+                    voiceButton.textContent = 'Hold to Speak';
+                    voiceButton.disabled = false;
+                    addToTranscript('Civil Security: Welcome to Civil Security. How can I assist you with your security needs today?', 'bot');
+                } else {
+                    updateStatus('Failed to initialize chatbot');
+                }
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('Socket disconnected');
+                isConnected = false;
+                updateStatus('Disconnected from server');
+                voiceButton.textContent = 'Hold to Speak';
+                stopVisualization();
+            });
+            
+            socket.on('transcript', (data) => {
+                if (data.transcript) {
+                    updateStatus('Listening: ' + data.transcript);
+                    if (data.isFinal) {
+                        addToTranscript(data.transcript, 'user');
+                    }
+                }
+            });
+            
+            socket.on('audio-out', (audioData) => {
+                audioQueue.push(audioData.audio);
+                if (!isPlaying) {
+                    playNextAudio();
+                }
+            });
+            
+            socket.on('response-end', (data) => {
+                addToTranscript(data.message, 'bot');
+                updateStatus('Ready');
+                voiceButton.textContent = 'Hold to Speak';
+                voiceButton.disabled = false;
+                voiceButton.classList.remove('processing');
+                
+                // Update chat history
+                if (chatHistory.length > 0) {
+                    chatHistory[chatHistory.length - 1].response = data.message;
+                }
+            });
+            
+            socket.on('error', (error) => {
+                console.error('Socket error:', error);
+                updateStatus('Error: ' + error.message);
+            });
+        }
+        
+        // Voice button events for press-and-hold functionality
+        voiceButton.addEventListener('mousedown', startRecording);
+        voiceButton.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            startRecording();
+        });
+        
+        voiceButton.addEventListener('mouseup', stopRecording);
+        voiceButton.addEventListener('mouseleave', stopRecording);
+        voiceButton.addEventListener('touchend', stopRecording);
+        voiceButton.addEventListener('touchcancel', stopRecording);
+        
+        // Start recording
+        async function startRecording() {
+            if (!isConnected) {
+                initSocket();
+                return;
+            }
+            
+            if (isRecording) return;
+            
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                source = audioContext.createMediaStreamSource(stream);
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                analyser = audioContext.createAnalyser();
+                
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                analyser.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                processor.onaudioprocess = (e) => {
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const output = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        output[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                    }
+                    
+                    socket.emit('audio-data', output.buffer);
+                };
+                
+                // Start visualization
+                startVisualization();
+                
+                // Start recognition
+                socket.emit('start-recognition');
+                voiceButton.textContent = 'Release to Stop';
+                voiceButton.classList.add('active');
+                updateStatus('Listening...');
+                isRecording = true;
+                
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                updateStatus('Error: ' + err.message);
+            }
+        }
+        
+        // Stop recording
+        function stopRecording() {
+            if (!isRecording) return;
+            
+            // Stop media stream
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            // Clean up audio processing
+            if (processor && audioContext) {
+                processor.disconnect();
+                if (analyser) analyser.disconnect();
+                if (source) source.disconnect();
+                processor = null;
+                analyser = null;
+                source = null;
+            }
+            
+            // Stop visualization
+            stopVisualization();
+            
+            // Stop recognition
+            socket.emit('stop-recognition');
+            voiceButton.textContent = 'Processing...';
+            voiceButton.disabled = true;
+            voiceButton.classList.remove('active');
+            voiceButton.classList.add('processing');
+            updateStatus('Processing speech...');
+            isRecording = false;
+        }
+        
+        // Start audio visualization
+        function startVisualization() {
+            if (!analyser) return;
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            const updateVisualization = () => {
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Map the frequency data to the bars
+                for (let i = 0; i < bars.length; i++) {
+                    const index = Math.floor(i * dataArray.length / bars.length);
+                    const value = dataArray[index] / 255;
+                    const height = Math.max(5, value * 100); // Minimum height of 5px
+                    bars[i].style.height = `${height}px`;
+                }
+                
+                animationFrame = requestAnimationFrame(updateVisualization);
+            };
+            
+            updateVisualization();
+        }
+        
+        // Stop visualization
+        function stopVisualization() {
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+                animationFrame = null;
+            }
+            
+            // Reset all bars to minimum height
+            bars.forEach(bar => {
+                bar.style.height = '5px';
+            });
+        }
+        
+        // Reset conversation
+        resetButton.onclick = () => {
+            chatHistory = [];
+            transcriptElement.innerHTML = '';
+            updateStatus('Conversation reset');
+        };
+        
+        // Send text message
+        sendButton.onclick = () => {
+            sendTextMessage();
+        };
+        
+        // Allow Enter key to send message
+        textInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendTextMessage();
+            }
+        });
+        
+        // Send text message
+        function sendTextMessage() {
+            const text = textInput.value.trim();
+            if (text) {
+                if (!isConnected) {
+                    initSocket();
+                    setTimeout(() => sendTextMessage(), 1000);
+                    return;
+                }
+                
+                addToTranscript(text, 'user');
+                
+                // Add to chat history
+                chatHistory.push({
+                    query: text,
+                    response: ''
+                });
+                
+                // Send to server
+                socket.emit('communication', {
+                    query: text,
+                    chatHistory: chatHistory
+                });
+                
+                textInput.value = '';
+                updateStatus('Processing...');
+            }
+        }
+        
+        // Play the next audio chunk from the queue
+        function playNextAudio() {
+            if (audioQueue.length > 0) {
+                isPlaying = true;
+                const base64Audio = audioQueue.shift();
+                const audio = new Audio('data:audio/mp3;base64,' + base64Audio);
+                
+                audio.addEventListener('ended', () => {
+                    isPlaying = false;
+                    playNextAudio(); // Play next chunk if available
+                });
+                
+                audio.play().catch(err => {
+                    console.error('Error playing audio:', err);
+                    isPlaying = false;
+                    playNextAudio(); // Try next chunk
+                });
+            }
+        }
+        
+        // Update status
+        function updateStatus(message) {
+            statusElement.textContent = message;
+        }
+        
+        // Add message to transcript
+        function addToTranscript(message, sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = sender === 'user' ? 'user-message' : 'bot-message';
+            messageDiv.textContent = message;
+            transcriptElement.appendChild(messageDiv);
+            transcriptElement.scrollTop = transcriptElement.scrollHeight;
+        }
+        
+        // Handle voice and language selection changes
+        voiceSelect.addEventListener('change', updateBotSettings);
+        languageSelect.addEventListener('change', updateBotSettings);
+        
+        function updateBotSettings() {
+            if (!isConnected) return;
+            
+            // Re-initialize with new settings
+            const securityData = {
+                additionalData: {
+                    SystemPrompt: 'You are a Civil Security AI assistant.',
+                    User_prompt: 'Provide security-related assistance.',
+                    Greeting_message: 'Welcome to Civil Security. How can I assist you with your security needs today?',
+                    Eligibility_criteria: 'Must be a valid security inquiry.',
+                    Restrictions: 'Cannot provide information about classified security protocols.',
+                    voice_type: voiceSelect.value.split('-')[1],
+                    language: languageSelect.value,
+                    pinecone_index: 'Texas',
+                    agent_type: 'Answer Calls'
+                }
+            };
+            
+            socket.emit('initialize', securityData);
+            updateStatus('Updating voice settings...');
+        }
+        
+        // Initialize on page load
+        window.onload = () => {
+            updateStatus('Click "Hold to Speak" to start');
+        };
+    </script>
+</body>
+</html>

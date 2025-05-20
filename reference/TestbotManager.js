@@ -1,0 +1,727 @@
+const textToSpeech = require("@google-cloud/text-to-speech");
+const { Pinecone } = require("@pinecone-database/pinecone");
+const { PineconeStore } = require("@langchain/pinecone");
+const { OpenAIEmbeddings } = require("@langchain/openai");
+const optimizedAudio = require('./optimizedAudioProcessing');
+const {
+  createChain,
+  processChat,
+  processParallelChat, // Explicitly import the parallel processing function
+  parseConversationHistory,
+} = require("./agent_chatbot");
+const tts = require("./tts");
+const dotenv = require("dotenv");
+const speech = require("@google-cloud/speech");
+const googleConfig = require("../../google.json");
+const { Milvus } = require("@langchain/community/vectorstores/milvus");
+
+// Load environment variables from .env file
+dotenv.config();
+const embeddings = new OpenAIEmbeddings({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: "text-embedding-3-small",
+});
+
+ZILLIZ_CLOUD_URI =
+  "https://in03-6078dd857cb819c.serverless.gcp-us-west1.cloud.zilliz.com";
+ZILLIZ_CLOUD_USERNAME = "db_6078dd857cb819c";
+ZILLIZ_CLOUD_PASSWORD = "Sr7|FlM9lEK4BF4d";
+ZILLIZ_CLOUD_API_KEY =
+  "76f74f4c1f941f33bc78f5b7d49977cce8a524efa96068b87eb5268de1e30a4fa39181f900ade6ce89d48cb2881fab2842af325c";
+
+const speechClient = new speech.SpeechClient({
+  projectId: googleConfig.project_id,
+  credentials: {
+    private_key: googleConfig.private_key,
+    client_email: googleConfig.client_email,
+  },
+});
+
+const languageCodeMap = {
+  English: "en-US",
+  Spanish: "es-ES",
+  French: "fr-FR",
+  Russian: "ru-RU",
+};
+
+const voiceMap = {
+  "English-Female": "en-US-Neural2-C",
+  "English-Male": "en-GB-News-K",
+  "Russian-Female": "ru-RU-Standard-A",
+  "Russian-Male": "ru-RU-Standard-B",
+  "French-Female": "fr-FR-Standard-C",
+  "French-Male": "fr-FR-Standard-B",
+  "Spanish-Female": "es-ES-Standard-A",
+  "Spanish-Male": "es-ES-Standard-B",
+};
+
+let dictConnection = {};
+
+const outboundSystemPrompt = `
+ You are an intelligent call agent for outbound calls. The company will provide you with 'eligibility criteria,' 'restrictions', and 'end requirements'. \
+Your task is to navigate the conversation based on what the user says, collecting any needed details. \
+Make sure to use different sentence structures each time, and review the 'chat_history' to avoid repeating the same sentences at the end. \
+Stick strictly to the given 'context', and do not introduce information beyond what is stated.
+Context: {context}
+Chat History: {chat_history}
+**RESTRICTIONS:**
+1. Strictly limit response to the exact information found in the 'Context'; do not add, assume, infer, or present any suggestions, advice, service details, timings, or other details not provided in 'Context'. If information is not available in 'Context', politely *INFORM* that you do not have information about it.
+2. If there is any alternative information related to user query is in 'Context', provide that information to the user without adding additional information based on assumptions.
+3. Once the conversation has started, do not repeat an introduction or restart the conversation from the 'chat history.'
+4. Always review 'chat history' to determine what information has already been asked and provided. Do not offer further assistance or asking for "end requirements" repeatedly at the end of response if already offer/ask in 'chat history'.
+5. Do not ask for information out of order or in a way that disregards the user's current question or stage in the process.
+6. Do not request or collect information that is not explicitly specified to collect in the 'eligibility criteria', 'restrictions', 'end requirements', or 'context' like personal information or any other information etc under any circumstances.
+7. If you ask the user that if user has any further queries, wait for their response before making any closing remarks like 'Have a great day' or 'Bye' or somewhat similar to it.
+8. When all 'end requirements' have been gathered, do not restart from the beginning; instead, proceed to address any remaining user queries or bring the conversation to a close.
+9. Ensure the 'eligibility criteria' are met as early as possible in the conversation. If not met, politely apologize and offer further assistance.
+10. Maintain a natural, conversational tone, as a human agent would, and only greet the user once at the start of the conversation.
+11. Handle restrictions by asking questions from 'end requirements' one by one, making sure to avoid asking previously answered questions.
+12. If the user expresses disinterest, ask if they have any further queries before concluding the conversation.
+13. Your response must be exclusively in {language} Language.
+14. Your response must use the SSML <say-as> tag exclusively for formatting phone numbers(interpret as telephone), dates(interpret as date), currency values(interpret as cardinal), and characters(interpret as characters) etc.
+  `;
+
+const inboundSystemPrompt = `
+You are an intelligent call agent for inbound calls. You will be given the company's 'eligibility criteria,' and 'restrictions'. \
+   Your primary task is to provide response to user query while strictly adhering to the 'Context', and ensuring no information is added beyond what is explicitly mentioned in 'Context'.\
+   Each section is delimeted by Sequence of '*'.
+   Greeting Message:
+   {Greeting_message}
+   ********************************************************************************************************
+   Guidelines:
+   {Restrictions}
+   ********************************************************************************************************
+   Eligibility Criteria:
+   {Eligibility_criteria}
+   ********************************************************************************************************
+   Context from which Chatbot should answer: {context}
+   ********************************************************************************************************
+   Chat History: {chat_history}
+   ********************************************************************************************************
+   **RESTRICTIONS:**
+   1. Maintain a natural, conversational tone, as a human agent would, and only greet the user once at the start of the conversation.
+   2. Strictly limit response to the exact information found in the 'Context'; do not add, assume, infer, or present any suggestions, advice, service details, timings, or other details not provided in 'Context'.\
+   If information is not available in 'Context' or 'chat_history' , politely *INFORM* that you do not have information about it.
+   3. If the user expresses interest in the services, wants to make a reservation, booking an appointment or has other related queries, politely ask for their name, phone number, and any other required details based on the domain-specific 'end requirements' before proceeding further.
+   4. Do not restart the conversation from the 'chat history' and always review 'chat history' to determine what information has already been asked and provided.
+   5. When asking if the user needs further assistance, ensure that the statement varies each time to avoid repetition. Use different phrasings such as *"Would you like help with anything else?"*, *"Is there anything else I can assist you with today?"*, *"Do you have any other questions I can help with?"*, *"Let me know if there's anything else you need help with."*, or *"Would you like any additional information or assistance?"*. These variations should be used naturally throughout the conversation to maintain a more engaging and dynamic interaction.
+   6. Do not ask for information out of order or in a way that disregards the user's current question or stage in the process.
+   7. Do not request or collect information that is not explicitly specified to collect in the 'eligibility criteria', 'restrictions', or 'context' like personal information or any other information etc. under any circumstances.
+   8. Do not acknowledge or refer to general system information like 'eligibility criteria,' 'restrictions,' or 'greeting messages' unless directly relevant to the user's query. Focus on addressing the user's question without mentioning the system setup.
+   9. If the user does not meet the 'eligibility criteria', politely inform them and then ask if the user needs any further assistance rather than ending the conversation immediately.
+   10. Restrict chatbot to same language which is  {language}  Language.
+   11. You must not independently suggest actions i.e. scheduling appointments, placing orders, or any other activities unless explicitly stated in the 'Context'.
+   12. Ask for reason of calling once if its not explicitly stated or mentioned  inside the 'chat_history'.
+   13. Avoid premature conclusions. After responding to a query, ask if the user needs any further assistance. Wait for the user to indicate they are satisfied before making closing remarks like 'Have a great day' or 'Goodbye.'
+   14. Understand the current query asked by the user and give responses according to that query.
+`;
+
+const options = {
+  timeZone: "Asia/Karachi",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+};
+const timeFormatter = new Intl.DateTimeFormat("en-US", options);
+
+async function timeFunction(text, startTime = null) {
+  const currentDate = new Date();
+
+  const timeParts = timeFormatter.formatToParts(currentDate);
+  let hours = timeParts.find((part) => part.type === "hour").value;
+  let minutes = timeParts.find((part) => part.type === "minute").value;
+  let seconds = timeParts.find((part) => part.type === "second").value;
+  let milliseconds = currentDate.getMilliseconds();
+  let currentTime = `${hours}h ${minutes}m ${seconds}s ${milliseconds}ms`;
+  
+  // If startTime is provided, calculate elapsed time in seconds
+  let elapsedText = "";
+  if (startTime) {
+    const elapsed = currentDate.getTime() - startTime;
+    elapsedText = `\t${(elapsed / 1000).toFixed(3)}s`;
+  }
+  
+  console.log(text + currentTime + elapsedText);
+  return currentDate.getTime();
+}
+
+function initializeTestbotNamespace(namespace) {
+  namespace.on("connect", (socket) => {
+    console.log("New client connected to testbot");
+    dictConnection[socket.id] = {
+      connection: false,
+      firstMessageCheck: true,
+      delimeterCheck: false,
+      conversationHistory: [],
+      lastMessage: "",
+    };
+
+    socket.on("intial_data", async (data) => {
+      if (data.additionalData) {
+        const {
+          Company_introduction,
+          Greeting_message,
+          Eligibility_criteria,
+          End_requirements,
+          Restrictions,
+          voice_type,
+          language,
+        } = data.additionalData;
+
+        let User_prompt;
+        let SystemPrompt;
+        if (data?.additionalData?.agent_type === "Make Calls") {
+          User_prompt = `
+          Company Introduction:
+          ${Company_introduction}
+
+          Greeting Message:
+          ${Greeting_message}
+
+          Eligibility Criteria:
+          ${Eligibility_criteria}
+
+          End Requirements:
+          ${End_requirements}
+
+          Restrictions:
+          ${Restrictions}
+          `;
+
+          SystemPrompt = outboundSystemPrompt;
+        } else if (data?.additionalData?.agent_type === "Answer Calls") {
+          SystemPrompt = inboundSystemPrompt;
+        }
+
+        let vectorStore;
+        if (data.additionalData.pinecone_index) {
+          console.log("Pinecone Index");
+          const pinecone_cl = new Pinecone({
+            apiKey: process.env.PINECONE_API_KEY,
+          });
+
+          vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+            pineconeIndex: pinecone_cl.Index(
+              data.additionalData.pinecone_index
+            ),
+            namespace: data.additionalData.pinecone_namespace,
+          });
+
+          dictConnection[socket.id].vectorStore = vectorStore;
+          dictConnection[socket.id].voice_type = voice_type;
+          dictConnection[socket.id].index_type = "pinecone";
+          dictConnection[socket.id].language = language;
+          dictConnection[socket.id].languageCode =
+            languageCodeMap[language] || "en-US";
+          let formData = {
+            Greeting_message,
+            Eligibility_criteria,
+            Restrictions,
+            type: data?.additionalData?.agent_type,
+          };
+          dictConnection[socket.id].formData = formData;
+          const chain = await createChain(SystemPrompt, User_prompt, formData);
+          dictConnection[socket.id].chain = chain;
+        } else if (data.additionalData.milvus_index) {
+          console.log("Milvus Index");
+          vectorStore = await Milvus.fromExistingCollection(embeddings, {
+            collectionName: `_${data.additionalData.milvus_index}`,
+            url: ZILLIZ_CLOUD_URI,
+            username: ZILLIZ_CLOUD_USERNAME,
+            password: ZILLIZ_CLOUD_PASSWORD,
+          });
+
+          dictConnection[socket.id].vectorStore = vectorStore;
+          dictConnection[socket.id].voice_type = voice_type;
+          dictConnection[socket.id].index_type = "milvus";
+          dictConnection[socket.id].language = language;
+          dictConnection[socket.id].languageCode =
+            languageCodeMap[language] || "en-US";
+          const chain = await createChain(SystemPrompt, User_prompt);
+          dictConnection[socket.id].chain = chain;
+        }
+      }
+
+      const client = new textToSpeech.TextToSpeechClient();
+      dictConnection[socket.id].speech_model = client;
+    });
+
+    async function handleCommunication(socket, message) {
+      // Record the start time of the conversation
+      const conversationStartTime = Date.now();
+      dictConnection[socket.id].conversationStartTime = conversationStartTime;
+      console.log(`Chat Bot Receive Time: ${new Date().toLocaleTimeString()}`);
+      
+      const convHistory = parseConversationHistory(
+        dictConnection[socket.id]?.conversationHistory
+      );
+
+      try {
+        // Track processing metrics
+        let chunkCount = 0;
+        let processingStartTime = Date.now();
+        let totalProcessingTime = 0;
+        
+        // Track the start time of the entire conversation
+        console.log(`Starting conversation processing at ${new Date().toLocaleTimeString()}`);
+        const totalStartTime = Date.now();
+        
+        for await (const audioChunk of getResponse(
+          socket.id,
+          dictConnection[socket.id]?.chain,
+          message,
+          convHistory,
+          dictConnection[socket.id]?.vectorStore,
+          dictConnection[socket.id]?.index_type,
+          dictConnection[socket.id]?.language,
+          dictConnection[socket.id]?.formData
+        )) {
+          // Measure chunk processing time
+          const chunkProcessTime = Date.now() - processingStartTime;
+          totalProcessingTime += chunkProcessTime;
+          
+          // Log performance metrics
+          console.log(`Chunk ${++chunkCount} processed in ${(chunkProcessTime/1000).toFixed(3)}s`);
+          const elapsedTime = Date.now() - conversationStartTime;
+          console.log(`Total elapsed time: ${(elapsedTime/1000).toFixed(3)}s - Sending chunk to user`);
+          
+          // Reset processing start time for next chunk
+          processingStartTime = Date.now();
+          
+          // Send audio chunk to client using original format
+          socket.emit("audio_chunk", audioChunk);
+        }
+        
+        // Log final performance metrics
+        const totalTime = Date.now() - totalStartTime;
+        const avgChunkTime = totalProcessingTime / (chunkCount || 1);
+        console.log(`Conversation complete - Total time: ${(totalTime/1000).toFixed(3)}s`);
+        console.log(`Average chunk processing time: ${(avgChunkTime/1000).toFixed(3)}s`);
+        console.log(`Total chunks: ${chunkCount}`);
+        console.log(`Total processing time: ${(totalProcessingTime/1000).toFixed(3)}s`);
+        console.log(`Overhead time: ${((totalTime - totalProcessingTime)/1000).toFixed(3)}s`);
+
+        dictConnection[socket.id].conversationHistory.push({
+          query: message,
+          response: dictConnection[socket.id].lastMessage.trim(),
+        });
+
+        // var call_cut_resp = await get_call_cut_response(
+        //   dictConnection[socket.id].conversationHistory,
+        //   dictConnection[socket.id].lastMessage.trim()
+        // );
+        // console.log(call_cut_resp, "Check of either call cut or not");
+        // if (call_cut_resp?.FollowUpQueries === "NO") {
+        //   console.log("Cut the call");
+        // }
+
+        dictConnection[socket.id].lastMessage = "";
+        dictConnection[socket.id].delimeterCheck = false;
+      } catch (error) {
+        console.error("Exception:", error);
+      }
+    }
+
+    let recognizeStream = null;
+    let finalText = "";
+    let silenceTimeout = null;
+    let voiceReceive = true;
+    let botProcessing = false;
+    // Audio buffer for collecting chunks before processing
+    let audioChunks = [];
+    let audioChunkSize = 0;
+    const MAX_AUDIO_CHUNK_SIZE = 64000; // Increased batch size for more efficient processing
+    let audioFlushTimeout = null; // Timer for periodic audio flush
+    
+    socket.on("audio_chunk", async (data) => {
+      let messageType = data?.type;
+
+      if (messageType === "text") {
+        console.log(Date.now());
+        timeFunction("Message Receive Time: ");
+        await handleCommunication(socket, data?.data);
+      } else if (messageType === "audio") {
+        if (voiceReceive) {
+          timeFunction("First voice chunk received: ");
+          voiceReceive = false;
+        }
+        try {
+          if (!recognizeStream) {
+            // Start periodic flush timer when stream is created
+            if (!audioFlushTimeout) {
+              audioFlushTimeout = setInterval(() => {
+                if (recognizeStream && audioChunks.length > 0) {
+                  const combinedBuffer = Buffer.concat(audioChunks);
+                  recognizeStream.write(combinedBuffer);
+                  audioChunks = [];
+                  audioChunkSize = 0;
+                }
+              }, 200); // Flush every 200ms
+            }
+          }
+            recognizeStream = speechClient
+              .streamingRecognize({
+                config: {
+                  encoding: "LINEAR16",
+                  sampleRateHertz: 16000,
+                  languageCode: dictConnection[socket.id].languageCode,
+                  // Optimize speech recognition settings
+                  enableAutomaticPunctuation: true,
+                  model: "latest_short", // Use a faster model optimized for short queries
+                  useEnhanced: true,
+                  // Disable features not needed for basic transcription
+                  enableWordTimeOffsets: false,
+                  enableWordConfidence: false,
+                  enableSpeakerDiarization: false,
+                  // Add speech adaptation for better recognition of domain-specific terms
+                  speechContexts: [{
+                    phrases: ["dental", "clinic", "appointment", "teeth", "Bright Smiles"],
+                    boost: 10
+                  }]
+                },
+                interimResults: false, // Changed to false for faster processing
+              })
+              .on("error", (err) => {
+                stopRecognitionStream();
+              })
+              .on("data", (data2) => {
+                // Check if data and results exist
+                if (!data2 || !data2.results || !data2.results[0]) {
+                  console.log('Invalid speech recognition data received');
+                  return;
+                }
+                
+                const result = data2.results[0];
+                // Check if result has the expected properties
+                if (!result) {
+                  console.log('Invalid speech recognition result');
+                  return;
+                }
+                
+                const isFinal = result.isFinal || false;
+                const transcript = result.alternatives && result.alternatives[0] ? result.alternatives[0].transcript : '';
+                
+                if (silenceTimeout) {
+                  clearTimeout(silenceTimeout);
+                }
+
+                if (isFinal) {
+                  finalText += transcript + " ";
+                  stopRecognitionStream();
+                }
+
+                if (finalText.trim() === "") return;
+                timeFunction("Voice Conversion Ended: ");
+                // Capture the current time before setting the timeout
+                const startTime = Date.now();
+                
+                // Reduce the delay for faster response
+                silenceTimeout = setTimeout(async () => {
+                  socket.emit("audio_converted", "Audio Converted");
+                  const delayTime = Date.now();
+                  console.log(`Voice Delay Ended: ${new Date().toLocaleTimeString()} (${(delayTime - startTime)/1000}s delay)`);
+                  console.log(finalText, "User Text");
+                  if (!botProcessing) {
+                    botProcessing = true;
+                    await handleCommunication(socket, finalText);
+                    botProcessing = false;
+                  }
+                  finalText = "";
+                }, 200); // Further reduced from 300ms to 200ms for faster response
+              });
+          }
+          
+          // Buffer audio chunks for more efficient processing
+          const audioBuffer = Buffer.from(data?.data);
+          audioChunks.push(audioBuffer);
+          audioChunkSize += audioBuffer.length;
+          
+          // Process audio in larger batches for efficiency
+          if (audioChunkSize >= MAX_AUDIO_CHUNK_SIZE) {
+            const combinedBuffer = Buffer.concat(audioChunks);
+            recognizeStream.write(combinedBuffer);
+            audioChunks = [];
+            audioChunkSize = 0;
+          }
+        } catch (err) {
+          console.error("Error processing audio data:", err);
+        }
+      }
+    });
+    
+    // Process any remaining audio chunks when the connection closes
+    socket.on("disconnect", () => {
+      console.log("Client disconnected from testbot");
+      if (audioChunks && audioChunks.length > 0) {
+        try {
+          const combinedBuffer = Buffer.concat(audioChunks);
+          if (recognizeStream) {
+    }
+      recognizeStream = speechClient
+        .streamingRecognize({
+          config: {
+            encoding: "LINEAR16",
+            sampleRateHertz: 16000,
+            languageCode: dictConnection[socket.id].languageCode,
+            // Optimize speech recognition settings
+            enableAutomaticPunctuation: true,
+            model: "latest_short", // Use a faster model optimized for short queries
+            useEnhanced: true,
+            // Disable features not needed for basic transcription
+            enableWordTimeOffsets: false,
+            enableWordConfidence: false,
+            enableSpeakerDiarization: false,
+            // Add speech adaptation for better recognition of domain-specific terms
+            speechContexts: [{
+              phrases: ["dental", "clinic", "appointment", "teeth", "Bright Smiles"],
+              boost: 10
+            }]
+          },
+          interimResults: false, // Changed to false for faster processing
+        })
+        .on("error", (err) => {
+          stopRecognitionStream();
+        })
+        .on("data", (data2) => {
+          // Check if data and results exist
+          if (!data2 || !data2.results || !data2.results[0]) {
+            console.log('Invalid speech recognition data received');
+            return;
+          }
+          
+          const result = data2.results[0];
+          // Check if result has the expected properties
+          if (!result) {
+            console.log('Invalid speech recognition result');
+            return;
+          }
+          
+          const isFinal = result.isFinal || false;
+          const transcript = result.alternatives && result.alternatives[0] ? result.alternatives[0].transcript : '';
+          
+          if (silenceTimeout) {
+            clearTimeout(silenceTimeout);
+          }
+
+          if (isFinal) {
+            finalText += transcript + " ";
+            stopRecognitionStream();
+          }
+
+          if (finalText.trim() === "") return;
+          timeFunction("Voice Conversion Ended: ");
+          // Capture the current time before setting the timeout
+          const startTime = Date.now();
+          
+          // Reduce the delay for faster response
+          silenceTimeout = setTimeout(async () => {
+            socket.emit("audio_converted", "Audio Converted");
+            const delayTime = Date.now();
+            console.log(`Voice Delay Ended: ${new Date().toLocaleTimeString()} (${(delayTime - startTime)/1000}s delay)`);
+            console.log(finalText, "User Text");
+            if (!botProcessing) {
+              botProcessing = true;
+              await handleCommunication(socket, finalText);
+              botProcessing = false;
+            }
+            finalText = "";
+          }, 200); // Further reduced from 300ms to 200ms for faster response
+        });
+    }
+    
+    // Buffer audio chunks for more efficient processing
+    const audioBuffer = Buffer.from(data?.data);
+    audioChunks.push(audioBuffer);
+    audioChunkSize += audioBuffer.length;
+    
+    // Process audio in larger batches for efficiency
+    if (audioChunkSize >= MAX_AUDIO_CHUNK_SIZE) {
+      const combinedBuffer = Buffer.concat(audioChunks);
+      recognizeStream.write(combinedBuffer);
+      audioChunks = [];
+      audioChunkSize = 0;
+    }
+  } catch (err) {
+    console.error("Error processing audio data:", err);
+  }
+} else if (messageType === "stop") {
+  stopRecognitionStream();
+    });
+  });
+}
+
+async function* getResponse(
+  sid,
+  chain,
+  query,
+  chatHistory,
+  vectorStore,
+  indexType,
+  language,
+  formData
+) {
+  console.log(`Starting response generation at ${new Date().toLocaleTimeString()}`);
+  const startTime = Date.now();
+  
+  // Define phrases to use for initial response
+  const initialPhrases = [
+    "Thank you for your question.",
+    "I understand.",
+    "Let me check that for you.",
+    "Is there anything else you'd like to know?"
+  ];
+  
+  // Initialize variables for text collection and processing
+  let collectedStr = "";
+  const userLanguage = dictConnection[sid].language;
+  const userVoiceType = dictConnection[sid].voice_type;
+  const voiceKey = `${userLanguage}-${userVoiceType}`;
+  const googleVoice = voiceMap[voiceKey];
+  speech_model = dictConnection[sid].speech_model;
+  
+  // Start preloading common phrases in the background immediately
+  setTimeout(() => {
+    try {
+      initialPhrases.forEach(phrase => {
+        tts.googleTextToWav(googleVoice, phrase, speech_model);
+      });
+    } catch (error) {
+      console.log("Error preloading common phrases:", error.message);
+    }
+  }, 0);
+  
+  try {
+    // Use the parallel processing function for better performance
+    const responseGenerator = processParallelChat(
+      chain,
+      query,
+      chatHistory,
+      vectorStore,
+      indexType,
+      language,
+      formData
+    );
+    
+    // Define sentence ending characters and minimum chunk size
+    const sentenceEndings = ['.', '!', '?', ':', ';'];
+    const minChunkSize = 30; // Balanced chunk size for smooth speech
+    
+    // Get the conversation start time from dictConnection
+    const conversationStartTime = dictConnection[sid].conversationStartTime;
+    
+    let sentenceBuffer = "";
+    let pendingTTS = null; // Track the current TTS conversion
+    let collectedStr = ""; // Initialize collectedStr
+    
+    // Pre-warm the TTS cache with common phrases immediately
+    setTimeout(() => {
+      try {
+        const phrasesToPreload = [
+          "Thank you for your question.",
+          "I understand.",
+          "Let me check that for you.",
+          "Is there anything else you'd like to know?"
+        ];
+        
+        phrasesToPreload.forEach(phrase => {
+          tts.googleTextToWav(googleVoice, phrase, speech_model);
+        });
+      } catch (error) {
+        console.log("Error preloading common phrases:", error.message);
+      }
+    }, 0);
+    
+    // Use the optimized TTS function from our module
+    const processTTS = async (text) => {
+      try {
+        return await optimizedAudio.optimizedTTS(googleVoice, text, speech_model);
+      } catch (error) {
+        console.error("Error in processTTS:", error);
+        return null;
+      }
+    };
+    
+    for await (const value of responseGenerator) {
+      if (value) {
+        collectedStr += value;
+        sentenceBuffer += value;
+        
+        // Check if we have a complete sentence or a substantial chunk
+        const hasEndingChar = sentenceEndings.some(char => sentenceBuffer.includes(char));
+        const isLargeChunk = sentenceBuffer.length >= minChunkSize;
+        
+        if (hasEndingChar && isLargeChunk) {
+          try {
+            console.log(`Chunk identified: ${sentenceBuffer.substring(0, 30)}... (${sentenceBuffer.length} chars)`);
+            
+            // Clean up the text before sending to TTS
+            const cleanText = sentenceBuffer.trim().replace(/\*\*/g, "");
+            
+            // If we have a pending TTS, wait for it to complete and yield the result
+            if (pendingTTS) {
+              const audioContent = await pendingTTS;
+              if (audioContent) {
+                yield audioContent;
+              }
+            }
+            
+            // Start processing the next chunk in parallel
+            pendingTTS = processTTS(cleanText);
+            
+            // Add to the full message history
+            dictConnection[sid].lastMessage += sentenceBuffer + " ";
+            sentenceBuffer = "";
+          } catch (error) {
+            console.error("Error processing chunk:", error);
+          }
+        }
+      }
+    }
+    
+    // Process any remaining text
+    if (sentenceBuffer.trim().length > 0) {
+      try {
+        console.log(`Processing final chunk: ${sentenceBuffer.substring(0, 30)}...`);
+        
+        // Clean up the text before sending to TTS
+        const cleanText = sentenceBuffer.trim().replace(/\*\*/g, "");
+        
+        // If we have a pending TTS, wait for it to complete and yield the result
+        if (pendingTTS) {
+          const audioContent = await pendingTTS;
+          if (audioContent) {
+            yield audioContent;
+          }
+        }
+        
+        // Process the final chunk
+        const audioContent = await processTTS(cleanText);
+        if (audioContent) {
+          yield audioContent;
+        }
+        
+        dictConnection[sid].lastMessage += sentenceBuffer + " ";
+      } catch (error) {
+        console.error("Error processing final chunk:", error);
+      }
+    } else if (pendingTTS) {
+      try {
+        // If no remaining text but we have a pending TTS
+        const audioContent = await pendingTTS;
+        if (audioContent) {
+          yield audioContent;
+        }
+      } catch (error) {
+        console.error("Error processing pending TTS:", error);
+      }
+    }
+    
+    const totalTime = Date.now() - startTime;
+    console.log(`Total response generation time: ${(totalTime/1000).toFixed(3)}s`);
+  } catch (error) {
+    console.error("Error in getResponse:", error);
+  }
+}
+
+module.exports = { initializeTestbotNamespace };

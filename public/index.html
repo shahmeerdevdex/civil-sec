@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Civil Security Voice AI Chatbot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            background-color: #1a3a6e;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-radius: 5px 5px 0 0;
+        }
+        .chat-container {
+            background-color: white;
+            border-radius: 0 0 5px 5px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .chat-box {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .user-message {
+            background-color: #e6f7ff;
+            margin-left: auto;
+            text-align: right;
+        }
+        .bot-message {
+            background-color: #f0f0f0;
+            margin-right: auto;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .primary-btn {
+            background-color: #1a3a6e;
+            color: white;
+        }
+        .secondary-btn {
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        .danger-btn {
+            background-color: #d9534f;
+            color: white;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #f8f9fa;
+            text-align: center;
+        }
+        .transcript {
+            font-style: italic;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        .settings {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .settings h3 {
+            margin-top: 0;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        select, input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Civil Security Voice AI Chatbot</h1>
+            <p>Your secure voice assistant for all security-related inquiries</p>
+        </header>
+        
+        <div class="chat-container">
+            <div class="chat-box" id="chatBox"></div>
+            
+            <div class="transcript" id="transcript"></div>
+            
+            <div class="controls">
+                <div class="button-group">
+                    <button id="startBtn" class="primary-btn">Start Speaking</button>
+                    <button id="stopBtn" class="danger-btn" disabled>Stop Speaking</button>
+                    <button id="resetBtn" class="secondary-btn">Reset Conversation</button>
+                </div>
+                
+                <div class="status" id="status">Ready to start conversation</div>
+            </div>
+        </div>
+        
+        <div class="settings">
+            <h3>Chatbot Settings</h3>
+            
+            <div class="form-group">
+                <label for="language">Language</label>
+                <select id="language">
+                    <option value="English">English</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="French">French</option>
+                    <option value="Russian">Russian</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="voice">Voice Type</label>
+                <select id="voice">
+                    <option value="Female">Female</option>
+                    <option value="Male">Male</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="vectorDb">Knowledge Base</label>
+                <select id="vectorDb">
+                    <option value="Texas">Security Protocols</option>
+                    <option value="emergency_procedures">Emergency Procedures</option>
+                    <option value="general_security">General Security</option>
+                </select>
+            </div>
+            
+            <button id="applySettingsBtn" class="primary-btn">Apply Settings</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // DOM elements
+            const chatBox = document.getElementById('chatBox');
+            const transcript = document.getElementById('transcript');
+            const startBtn = document.getElementById('startBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            const resetBtn = document.getElementById('resetBtn');
+            const statusEl = document.getElementById('status');
+            const languageSelect = document.getElementById('language');
+            const voiceSelect = document.getElementById('voice');
+            const vectorDbSelect = document.getElementById('vectorDb');
+            const applySettingsBtn = document.getElementById('applySettingsBtn');
+            
+            // Socket.io connection
+            const socket = io('/civil-security');
+            
+            // Audio context and recorder
+            let audioContext;
+            let recorder;
+            let isRecording = false;
+            let chatHistory = [];
+            
+            // Initialize audio
+            async function initAudio() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    
+                    // Create analyzer for audio visualization (optional)
+                    const analyser = audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    
+                    // Create script processor for audio processing
+                    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                    
+                    // Connect audio nodes
+                    const source = audioContext.createMediaStreamSource(stream);
+                    source.connect(analyser);
+                    analyser.connect(processor);
+                    processor.connect(audioContext.destination);
+                    
+                    // Process audio data
+                    processor.onaudioprocess = (e) => {
+                        if (isRecording) {
+                            // Convert to 16-bit PCM
+                            const inputData = e.inputBuffer.getChannelData(0);
+                            const output = new Int16Array(inputData.length);
+                            for (let i = 0; i < inputData.length; i++) {
+                                output[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                            }
+                            
+                            // Send audio data to server
+                            socket.emit('audio-data', output.buffer);
+                        }
+                    };
+                    
+                    // Store recorder for later use
+                    recorder = { processor, stream };
+                    
+                    updateStatus('Audio initialized successfully');
+                } catch (error) {
+                    console.error('Error initializing audio:', error);
+                    updateStatus('Error initializing audio: ' + error.message, true);
+                }
+            }
+            
+            // Start recording
+            function startRecording() {
+                if (!recorder) {
+                    updateStatus('Audio not initialized', true);
+                    return;
+                }
+                
+                isRecording = true;
+                socket.emit('start-recognition');
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                updateStatus('Listening...');
+            }
+            
+            // Stop recording
+            function stopRecording() {
+                if (!isRecording) return;
+                
+                isRecording = false;
+                socket.emit('stop-recognition');
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                updateStatus('Processing...');
+            }
+            
+            // Reset conversation
+            function resetConversation() {
+                chatHistory = [];
+                chatBox.innerHTML = '';
+                transcript.textContent = '';
+                updateStatus('Conversation reset');
+            }
+            
+            // Update status
+            function updateStatus(message, isError = false) {
+                statusEl.textContent = message;
+                statusEl.style.backgroundColor = isError ? '#ffdddd' : '#f8f9fa';
+            }
+            
+            // Add message to chat
+            function addMessage(text, isUser = false) {
+                const messageEl = document.createElement('div');
+                messageEl.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+                messageEl.textContent = text;
+                chatBox.appendChild(messageEl);
+                chatBox.scrollTop = chatBox.scrollHeight;
+            }
+            
+            // Apply settings
+            function applySettings() {
+                const language = languageSelect.value;
+                const voiceType = voiceSelect.value;
+                const vectorDb = vectorDbSelect.value;
+                
+                // Initialize chatbot with settings
+                socket.emit('initialize', {
+                    additionalData: {
+                        SystemPrompt: 'You are a Civil Security AI assistant.',
+                        User_prompt: 'Provide security-related assistance.',
+                        Greeting_message: 'Welcome to Civil Security. How can I assist you with your security needs today?',
+                        Eligibility_criteria: 'Must be a valid security inquiry.',
+                        Restrictions: 'Cannot provide information about classified security protocols.',
+                        voice_type: voiceType,
+                        language: language,
+                        pinecone_index: vectorDb,
+                        agent_type: 'Answer Calls'
+                    }
+                });
+                
+                updateStatus('Settings applied');
+            }
+            
+            // Event listeners
+            startBtn.addEventListener('click', startRecording);
+            stopBtn.addEventListener('click', stopRecording);
+            resetBtn.addEventListener('click', resetConversation);
+            applySettingsBtn.addEventListener('click', applySettings);
+            
+            // Socket event handlers
+            socket.on('connect', () => {
+                updateStatus('Connected to server');
+                initAudio();
+            });
+            
+            socket.on('disconnect', () => {
+                updateStatus('Disconnected from server', true);
+            });
+            
+            socket.on('transcript', (data) => {
+                transcript.textContent = data.transcript;
+                
+                if (data.isFinal) {
+                    // Add user message to chat
+                    addMessage(data.transcript, true);
+                    
+                    // Add to chat history
+                    chatHistory.push({
+                        query: data.transcript,
+                        response: ''
+                    });
+                    
+                    // Send to server for processing
+                    socket.emit('communication', {
+                        query: data.transcript,
+                        chatHistory: chatHistory
+                    });
+                    
+                    // Clear transcript
+                    transcript.textContent = '';
+                    updateStatus('Processing response...');
+                }
+            });
+            
+            socket.on('audio-out', (data) => {
+                // Play audio response
+                const audio = new Audio('data:audio/mp3;base64,' + data.audio);
+                audio.play();
+            });
+            
+            socket.on('response-end', (data) => {
+                // Add bot message to chat
+                addMessage(data.message);
+                
+                // Update last chat history entry with response
+                if (chatHistory.length > 0) {
+                    chatHistory[chatHistory.length - 1].response = data.message;
+                }
+                
+                updateStatus(`Response completed in ${data.timeTaken.toFixed(2)}s`);
+                startBtn.disabled = false;
+            });
+            
+            socket.on('initialized', (data) => {
+                if (data.success) {
+                    updateStatus('Chatbot initialized successfully');
+                    startBtn.disabled = false;
+                } else {
+                    updateStatus('Failed to initialize chatbot', true);
+                }
+            });
+            
+            socket.on('error', (data) => {
+                updateStatus('Error: ' + data.message, true);
+            });
+            
+            // Initialize on load
+            updateStatus('Initializing...');
+            applySettings();
+        });
+    </script>
+</body>
+</html>
